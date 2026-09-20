@@ -1,3 +1,34 @@
+--[[
+	VelocityHUB UI Library  |  v1.0.0
+
+	VelocityHUB - a modern Rayfield-style script hub library.
+
+	API OVERVIEW
+	------------------------------------------------------------------
+	local Window = VelocityHUB:CreateWindow({ Name = "My Hub", ToggleKey = Enum.KeyCode.RightShift })
+	local Tab    = Window:CreateTab("Main", "rbxassetid://0000")   -- icon is optional
+
+	Tab:CreateSection("Title")
+	Tab:CreateLabel("Some text")
+	Tab:CreateButton({ Name, Callback })
+	Tab:CreateToggle({ Name, CurrentValue, Flag, Callback(bool) })
+	Tab:CreateSlider({ Name, Range = {min,max}, Increment, Suffix, CurrentValue, Flag, Callback(number) })
+	Tab:CreateColorPicker({ Name, Color, Flag, Callback(Color3) })
+	Tab:CreateKeybind({ Name, CurrentKeybind, Flag, Callback(KeyCode), OnChange(KeyCode) })
+	Tab:CreateDivider()
+	Tab:CreateTextBox({ Name, CurrentValue, PlaceholderText, NumbersOnly, Min, Max, Flag, Callback(value, enterPressed) })
+	Tab:CreateDropdown({ Name, Options = {"A","B"}, CurrentOption, Flag, Callback(option) })
+
+	Window:Notify({ Title, Content, Duration, Type = "Info" | "Success" | "Error" })
+	Window:Toggle() / Window:Destroy()
+	Window:CreateButton / CreateSlider / ... also work (they go to the last tab created).
+	VelocityHUB.Flags["MyFlag"].CurrentValue   -- read any element by its Flag
+	------------------------------------------------------------------
+]]
+
+--==================================================================--
+--  CONFIGURATION  (edit these)
+--==================================================================--
 local Config = {
 	UseKeySystem = true,                        -- true = key screen first, false = skip it
 
@@ -6,12 +37,12 @@ local Config = {
 	KeyHint  = "Join our Discord server and open the #key channel to receive key.",
 
 	Name        = "VelocityHUB",
-	ToggleKey   = Enum.KeyCode.RightControl,      -- default key to open / close the GUI
+	ToggleKey   = Enum.KeyCode.RightControl,    -- default key to open / close the GUI
 	AccentColor = Color3.fromRGB(108, 92, 255), -- default theme color
-	ShowBanner  = true,                         -- default state of the banner
+	ShowBanner  = true,                         -- banner image used as the window background
 
-	LogoId   = "rbxassetid://122463651898741",  -- 1024x1024
-	BannerId = "rbxassetid://111896128679198",  -- 1024x1024
+	LogoId   = "rbxassetid://79065395294292",
+	BannerId = "rbxassetid://86528416919779",
 }
 
 --==================================================================--
@@ -43,6 +74,13 @@ local Theme = {
 	Accent     = Config.AccentColor,
 }
 
+-- Typography: change these three lines to restyle every text in the library.
+local Fonts = {
+	Regular = Enum.Font.Gotham,
+	Medium  = Enum.Font.GothamMedium,
+	Bold    = Enum.Font.GothamBold,
+}
+
 -- Anything that uses the accent color registers here so the Settings color picker can recolor it live.
 local accentBinds = {}
 local function onAccent(fn)
@@ -69,6 +107,11 @@ local function setBGTransparency(t)
 	bgTransparency = t
 	for _, fn in ipairs(bgBinds) do fn() end
 end
+-- custom background-aware updater (used for the banner layers and the shadow)
+local function bindBGFn(fn)
+	table.insert(bgBinds, fn)
+	fn()
+end
 
 --==================================================================--
 --  UTILITIES
@@ -80,7 +123,7 @@ local function create(class, props, children)
 	end
 	if inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox") then
 		inst.BackgroundTransparency = 1
-		inst.Font = Enum.Font.GothamMedium
+		inst.Font = Fonts.Medium
 		inst.TextColor3 = Theme.Text
 		inst.TextSize = 13
 		inst.Text = ""
@@ -119,21 +162,50 @@ end
 
 local function lighten(c, a) return c:Lerp(Color3.new(1, 1, 1), a) end
 
--- Soft 9-slice drop shadow. Must be a SIBLING placed behind the frame it decorates.
-local function createShadow(parent, spread, transparency)
-	return create("ImageLabel", {
-		Name = "Shadow",
-		Image = "rbxassetid://6014261993",
-		ImageColor3 = Color3.new(0, 0, 0),
-		ImageTransparency = transparency or 0.5,
-		ScaleType = Enum.ScaleType.Slice,
-		SliceCenter = Rect.new(49, 49, 450, 450),
-		AnchorPoint = Vector2.new(0.5, 0.5),
-		Position = UDim2.new(0.5, 0, 0.5, 6),
-		Size = UDim2.new(1, spread * 2, 1, spread * 2),
-		ZIndex = 0,
-		Parent = parent,
+-- Layered, ultra-soft drop shadow: four stacked 9-slice layers give a smooth falloff instead of one hard halo.
+-- fade: 0 = fully visible, 1 = invisible.  minDim: approx. smallest side of the parent (keeps the 9-slice clean).
+-- Must be a SIBLING placed behind the frame it decorates.
+local SHADOW_IMAGE = "rbxassetid://6014261993"
+
+local function setShadowFade(shadow, fade)
+	for _, layer in ipairs(shadow:GetChildren()) do
+		if layer:IsA("ImageLabel") then
+			local base = layer:GetAttribute("Base") or 0.8
+			layer.ImageTransparency = base + (1 - base) * fade
+		end
+	end
+end
+
+local function tweenShadow(shadow, fade, duration)
+	for _, layer in ipairs(shadow:GetChildren()) do
+		if layer:IsA("ImageLabel") then
+			local base = layer:GetAttribute("Base") or 0.8
+			tween(layer, { ImageTransparency = base + (1 - base) * fade }, duration or 0.3)
+		end
+	end
+end
+
+local function createShadow(parent, spread, fade, minDim)
+	spread = spread or 30
+	minDim = minDim or 200
+	local holder = create("Frame", {
+		Name = "Shadow", BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(0.5, 0, 0.5, math.floor(spread * 0.25)), Size = UDim2.fromScale(1, 1), ZIndex = 0, Parent = parent,
 	})
+	local layers = { { 1.00, 0.93 }, { 0.72, 0.88 }, { 0.46, 0.82 }, { 0.22, 0.74 } } -- { spread multiplier, transparency }
+	for _, l in ipairs(layers) do
+		local sp = spread * l[1]
+		local img = create("ImageLabel", {
+			Image = SHADOW_IMAGE, ImageColor3 = Color3.new(0, 0, 0),
+			ScaleType = Enum.ScaleType.Slice, SliceCenter = Rect.new(49, 49, 450, 450),
+			SliceScale = math.clamp((minDim + sp * 2) / 110, 0.25, 1),
+			AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.new(1, sp * 2, 1, sp * 2), ZIndex = 0, Parent = holder,
+		})
+		img:SetAttribute("Base", l[2])
+	end
+	setShadowFade(holder, fade or 0)
+	return holder
 end
 
 local function safeCall(fn, ...)
@@ -295,13 +367,13 @@ function VelocityHUB:Notify(opts)
 
 	local wrapper = create("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 70), Parent = NotifyHolder })
 	local mover = create("Frame", { BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Position = UDim2.new(1, 330, 0, 0), Parent = wrapper })
-	createShadow(mover, 18, 0.55)
+	createShadow(mover, 24, 0, 70)
 	local card = create("Frame", { BackgroundColor3 = Theme.Card, Size = UDim2.fromScale(1, 1), ClipsDescendants = true, Parent = mover })
 	corner(card, 10)
 	stroke(card, Theme.Stroke, 1, 0.3)
 	local bar = create("Frame", { BackgroundColor3 = color, Position = UDim2.new(0, 8, 0, 12), Size = UDim2.new(0, 3, 1, -24), Parent = card })
 	corner(bar, 2)
-	newLabel({ Text = opts.Title or "VelocityHUB", Font = Enum.Font.GothamBold, TextSize = 14, Position = UDim2.new(0, 22, 0, 9), Size = UDim2.new(1, -34, 0, 18), Parent = card })
+	newLabel({ Text = opts.Title or "VelocityHUB", Font = Fonts.Bold, TextSize = 14, Position = UDim2.new(0, 22, 0, 9), Size = UDim2.new(1, -34, 0, 18), Parent = card })
 	newLabel({ Text = opts.Content or "", TextSize = 12, TextColor3 = Theme.SubText, TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top, Position = UDim2.new(0, 22, 0, 29), Size = UDim2.new(1, -34, 0, 34), Parent = card })
 	local timer = create("Frame", { BackgroundColor3 = color, Position = UDim2.new(0, 0, 1, -2), Size = UDim2.new(1, 0, 0, 2), Parent = card })
 
@@ -360,14 +432,14 @@ local function runKeySystem(backdrop)
 		Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(420, 384), Parent = backdrop,
 	})
 	local scale = create("UIScale", { Scale = 0.85, Parent = holder })
-	local shadow = createShadow(holder, 36, 1)
+	local shadow = createShadow(holder, 44, 1, 384)
 	local card = create("CanvasGroup", { BackgroundColor3 = Theme.Background, GroupTransparency = 1, Size = UDim2.fromScale(1, 1), Parent = holder })
 	corner(card, 16)
 	stroke(card, Theme.Stroke, 1, 0.3)
 
 	tween(scale, { Scale = 1 }, 0.6, Enum.EasingStyle.Back)
 	tween(card, { GroupTransparency = 0 }, 0.5)
-	tween(shadow, { ImageTransparency = 0.4 }, 0.6)
+	tweenShadow(shadow, 0.15, 0.6)
 
 	-- accent strip
 	local strip = create("Frame", { Size = UDim2.new(1, 0, 0, 3), Parent = card })
@@ -384,7 +456,7 @@ local function runKeySystem(backdrop)
 	bindAccent(stroke(logo, Theme.Accent, 2, 0.15), "Color")
 	TweenService:Create(logo, TweenInfo.new(2.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), { Position = UDim2.new(0.5, 0, 0, 31) }):Play()
 
-	newLabel({ Text = Config.Name, Font = Enum.Font.GothamBold, TextSize = 26, TextXAlignment = Enum.TextXAlignment.Center, Position = UDim2.new(0, 0, 0, 122), Size = UDim2.new(1, 0, 0, 30), Parent = card })
+	newLabel({ Text = Config.Name, Font = Fonts.Bold, TextSize = 26, TextXAlignment = Enum.TextXAlignment.Center, Position = UDim2.new(0, 0, 0, 122), Size = UDim2.new(1, 0, 0, 30), Parent = card })
 	newLabel({ Text = "Enter your key to continue", TextSize = 13, TextColor3 = Theme.SubText, TextXAlignment = Enum.TextXAlignment.Center, Position = UDim2.new(0, 0, 0, 152), Size = UDim2.new(1, 0, 0, 18), Parent = card })
 
 	-- input
@@ -393,7 +465,7 @@ local function runKeySystem(backdrop)
 	local inputStroke = stroke(inputFrame, Theme.Stroke, 1.5, 0)
 	local box = create("TextBox", {
 		PlaceholderText = "Enter your key here...", PlaceholderColor3 = Theme.SubText, ClearTextOnFocus = false,
-		Font = Enum.Font.GothamMedium, TextSize = 14, TextXAlignment = Enum.TextXAlignment.Center,
+		Font = Fonts.Medium, TextSize = 14, TextXAlignment = Enum.TextXAlignment.Center,
 		Position = UDim2.new(0, 12, 0, 0), Size = UDim2.new(1, -24, 1, 0), Parent = inputFrame,
 	})
 	local status = newLabel({ Text = "", TextSize = 12, TextColor3 = Theme.SubText, TextXAlignment = Enum.TextXAlignment.Center, Position = UDim2.new(0, 24, 0, 234), Size = UDim2.new(1, -48, 0, 16), Parent = card })
@@ -403,7 +475,7 @@ local function runKeySystem(backdrop)
 
 	-- buttons
 	local verifyBtn = create("TextButton", {
-		Text = "Verify Key", Font = Enum.Font.GothamBold, TextSize = 14, TextXAlignment = Enum.TextXAlignment.Center,
+		Text = "Verify Key", Font = Fonts.Bold, TextSize = 14, TextXAlignment = Enum.TextXAlignment.Center,
 		BackgroundTransparency = 0, Position = UDim2.new(0, 24, 0, 258), Size = UDim2.new(0.58, -29, 0, 40), Parent = card,
 	})
 	corner(verifyBtn, 10)
@@ -412,7 +484,7 @@ local function runKeySystem(backdrop)
 	addPress(verifyBtn, verifyBtn, 0.96)
 
 	local getBtn = create("TextButton", {
-		Text = "Get Key", Font = Enum.Font.GothamBold, TextSize = 14, TextXAlignment = Enum.TextXAlignment.Center,
+		Text = "Get Key", Font = Fonts.Bold, TextSize = 14, TextXAlignment = Enum.TextXAlignment.Center,
 		BackgroundColor3 = Theme.Card, BackgroundTransparency = 0,
 		AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -24, 0, 258), Size = UDim2.new(0.42, -29, 0, 40), Parent = card,
 	})
@@ -433,7 +505,7 @@ local function runKeySystem(backdrop)
 	end)
 
 	local closeBtn = create("TextButton", {
-		Text = "x", Font = Enum.Font.GothamBold, TextSize = 16, TextColor3 = Theme.SubText, TextXAlignment = Enum.TextXAlignment.Center,
+		Text = "x", Font = Fonts.Bold, TextSize = 16, TextColor3 = Theme.SubText, TextXAlignment = Enum.TextXAlignment.Center,
 		Position = UDim2.new(1, -38, 0, 10), Size = UDim2.fromOffset(28, 28), Parent = card,
 	})
 	closeBtn.MouseEnter:Connect(function() tween(closeBtn, { TextColor3 = Theme.Danger }, 0.2) end)
@@ -457,7 +529,7 @@ local function runKeySystem(backdrop)
 	local function fadeOut(callback)
 		tween(card, { GroupTransparency = 1 }, 0.4)
 		tween(scale, { Scale = 0.92 }, 0.4)
-		tween(shadow, { ImageTransparency = 1 }, 0.4)
+		tweenShadow(shadow, 1, 0.4)
 		task.wait(0.45)
 		holder:Destroy()
 		result:Fire(callback)
@@ -609,10 +681,8 @@ function VelocityHUB:CreateWindow(settings)
 	-- Frame layout
 	----------------------------------------------------------------
 	local WIN_W, WIN_H, SIDEBAR_W = 680, 460, 184
-	local BANNER_SIZE = 136
 	local TABS_TOP = 72
-	local TABS_BOTTOM_WITH_BANNER = BANNER_SIZE + 22
-	local TABS_BOTTOM_NO_BANNER = 10
+	local TABS_BOTTOM = 12
 
 	local camera = workspace.CurrentCamera
 	local baseScale = 1
@@ -631,21 +701,63 @@ function VelocityHUB:CreateWindow(settings)
 	})
 	local uiScale = create("UIScale", { Scale = baseScale * 0.85, Parent = Body })
 
-	local shadow = createShadow(Body, 34, 0.45)
-	bindBG(shadow, "ImageTransparency", 0.45)
+	local shadow = createShadow(Body, 46, 0, WIN_H)
+	bindBGFn(function() setShadowFade(shadow, bgTransparency) end)
 
 	local Main = create("Frame", { Name = "Main", BackgroundColor3 = Theme.Background, Size = UDim2.fromScale(1, 1), Parent = Body })
 	corner(Main, 14)
-	stroke(Main, Theme.Stroke, 1, 0.35)
+	stroke(Main, Color3.new(1, 1, 1), 1, 0.86)
 	bindBG(Main, "BackgroundTransparency", 0)
 
+	-- Banner as the window background ------------------------------
+	-- A CanvasGroup lets the rounded corners clip the image and every shade layer cleanly.
+	local Backdrop = create("CanvasGroup", { Name = "BannerBackdrop", BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), ZIndex = 0, Parent = Main })
+	corner(Backdrop, 14)
+	local BgImage = create("ImageLabel", { Name = "Banner", Image = Config.BannerId, ScaleType = Enum.ScaleType.Crop, Size = UDim2.fromScale(1, 1), ZIndex = 1, Parent = Backdrop })
+
+	local function shade(rotation, points)
+		local keys = {}
+		for _, p in ipairs(points) do table.insert(keys, NumberSequenceKeypoint.new(p[1], p[2])) end
+		local f = create("Frame", { BackgroundColor3 = Color3.new(0, 0, 0), Size = UDim2.fromScale(1, 1), Parent = Backdrop })
+		create("UIGradient", { Rotation = rotation, Transparency = NumberSequence.new(keys), Parent = f })
+		return f
+	end
+	-- Dark overlays keep every label readable (lower number = darker). Tweak here to taste.
+	local ShadeH = shade(0,  { { 0, 0.25 }, { 0.27, 0.35 }, { 1, 0.48 } }) -- darker on the sidebar side
+	local ShadeV = shade(90, { { 0, 0.65 }, { 1, 0.30 } })                 -- vignette toward the bottom
+
+	local Tint = create("Frame", { BackgroundColor3 = Color3.new(1, 1, 1), Size = UDim2.fromScale(1, 1), Parent = Backdrop })
+	local tintGrad = create("UIGradient", {
+		Rotation = -35,
+		Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.6, 0.94), NumberSequenceKeypoint.new(1, 0.80) }),
+		Parent = Tint,
+	})
+	onAccent(function(c) tintGrad.Color = ColorSequence.new(c) end) -- soft accent glow that follows the theme color
+
+	local SidebarShade = create("Frame", { BackgroundColor3 = Theme.Sidebar, Size = UDim2.new(0, SIDEBAR_W, 1, 0), Parent = Backdrop })
+	bindBG(SidebarShade, "BackgroundTransparency", 0.42) -- frosted-glass sidebar
+	ShadeH.ZIndex, ShadeV.ZIndex, Tint.ZIndex, SidebarShade.ZIndex = 2, 3, 4, 5 -- explicit layer order
+
+	local bgLayers = { ShadeH, ShadeV, Tint }
+	local bannerShown = Config.ShowBanner
+	local function applyBackground(animate)
+		local t = bannerShown and bgTransparency or 1
+		if animate then
+			tween(BgImage, { ImageTransparency = t }, 0.5)
+			for _, f in ipairs(bgLayers) do tween(f, { BackgroundTransparency = t }, 0.5) end
+		else
+			BgImage.ImageTransparency = t
+			for _, f in ipairs(bgLayers) do f.BackgroundTransparency = t end
+		end
+	end
+	bindBGFn(function() applyBackground(false) end)
+	-- start hidden; the open animation fades the banner in
+	BgImage.ImageTransparency = 1
+	for _, f in ipairs(bgLayers) do f.BackgroundTransparency = 1 end
+
 	-- Sidebar ------------------------------------------------------
-	local Sidebar = create("Frame", { Name = "Sidebar", BackgroundColor3 = Theme.Sidebar, Size = UDim2.new(0, SIDEBAR_W, 1, 0), Parent = Main })
-	corner(Sidebar, 14)
-	bindBG(Sidebar, "BackgroundTransparency", 0)
-	local SidebarCover = create("Frame", { BackgroundColor3 = Theme.Sidebar, Position = UDim2.new(0, SIDEBAR_W - 14, 0, 0), Size = UDim2.new(0, 14, 1, 0), Parent = Main })
-	bindBG(SidebarCover, "BackgroundTransparency", 0)
-	create("Frame", { BackgroundColor3 = Theme.Stroke, BackgroundTransparency = 0.5, Position = UDim2.new(0, SIDEBAR_W, 0, 0), Size = UDim2.new(0, 1, 1, 0), Parent = Main })
+	local Sidebar = create("Frame", { Name = "Sidebar", BackgroundTransparency = 1, Size = UDim2.new(0, SIDEBAR_W, 1, 0), Parent = Main })
+	create("Frame", { BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 0.88, Position = UDim2.new(0, SIDEBAR_W, 0, 0), Size = UDim2.new(0, 1, 1, 0), Parent = Main })
 
 	local Header = create("Frame", { Name = "Header", BackgroundTransparency = 1, Size = UDim2.new(0, SIDEBAR_W, 0, 68), Parent = Main })
 	local headerLogo = create("ImageLabel", {
@@ -654,7 +766,7 @@ function VelocityHUB:CreateWindow(settings)
 	})
 	corner(headerLogo, 10)
 	bindAccent(stroke(headerLogo, Theme.Accent, 1.5, 0.2), "Color")
-	newLabel({ Text = windowName, Font = Enum.Font.GothamBold, TextSize = 15, TextTruncate = Enum.TextTruncate.AtEnd, Position = UDim2.new(0, 64, 0, 16), Size = UDim2.new(1, -72, 0, 18), Parent = Header })
+	newLabel({ Text = windowName, Font = Fonts.Bold, TextSize = 15, TextTruncate = Enum.TextTruncate.AtEnd, Position = UDim2.new(0, 64, 0, 16), Size = UDim2.new(1, -72, 0, 18), Parent = Header })
 	newLabel({ Text = "Please Like...", TextSize = 11, TextColor3 = Theme.SubText, Position = UDim2.new(0, 64, 0, 34), Size = UDim2.new(1, -72, 0, 14), Parent = Header })
 
 	local TabList = create("ScrollingFrame", {
@@ -662,18 +774,8 @@ function VelocityHUB:CreateWindow(settings)
 		AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y,
 		Position = UDim2.new(0, 8, 0, TABS_TOP), Size = UDim2.new(1, 0, 1, 0), Parent = Sidebar,
 	})
-	TabList.Size = UDim2.new(0, SIDEBAR_W - 16, 1, -(TABS_TOP + TABS_BOTTOM_WITH_BANNER))
+	TabList.Size = UDim2.new(0, SIDEBAR_W - 16, 1, -(TABS_TOP + TABS_BOTTOM))
 	create("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder, Parent = TabList })
-
-	-- Banner (bottom of sidebar) -----------------------------------
-	local Banner = create("ImageLabel", {
-		Name = "Banner", Image = Config.BannerId, ScaleType = Enum.ScaleType.Crop, ImageTransparency = 1,
-		AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0, SIDEBAR_W / 2, 1, -14), Size = UDim2.fromOffset(BANNER_SIZE, BANNER_SIZE),
-		BackgroundColor3 = Theme.Card, BackgroundTransparency = 1, Parent = Main,
-	})
-	corner(Banner, 16)
-	local bannerStroke = stroke(Banner, Theme.Accent, 1.5, 1)
-	bindAccent(bannerStroke, "Color")
 
 	-- Content area -------------------------------------------------
 	local Content = create("Frame", { Name = "Content", BackgroundTransparency = 1, Position = UDim2.new(0, SIDEBAR_W + 1, 0, 0), Size = UDim2.new(1, -(SIDEBAR_W + 1), 1, 0), Parent = Main })
@@ -683,10 +785,10 @@ function VelocityHUB:CreateWindow(settings)
 	create("UIGradient", { Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 1) }), Parent = glow })
 
 	local Topbar = create("Frame", { Name = "Topbar", BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 56), Parent = Content })
-	local pageTitle = newLabel({ Text = "", Font = Enum.Font.GothamBold, TextSize = 18, Position = UDim2.new(0, 20, 0, 0), Size = UDim2.new(1, -80, 1, 0), Parent = Topbar })
+	local pageTitle = newLabel({ Text = "", Font = Fonts.Bold, TextSize = 18, Position = UDim2.new(0, 20, 0, 0), Size = UDim2.new(1, -80, 1, 0), Parent = Topbar })
 
 	local closeBtn = create("TextButton", {
-		Text = "x", Font = Enum.Font.GothamBold, TextSize = 14, TextColor3 = Theme.SubText, TextXAlignment = Enum.TextXAlignment.Center,
+		Text = "x", Font = Fonts.Bold, TextSize = 14, TextColor3 = Theme.SubText, TextXAlignment = Enum.TextXAlignment.Center,
 		BackgroundColor3 = Theme.Card, BackgroundTransparency = 0,
 		AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -14, 0.5, 0), Size = UDim2.fromOffset(30, 30), Parent = Topbar,
 	})
@@ -776,25 +878,9 @@ function VelocityHUB:CreateWindow(settings)
 	----------------------------------------------------------------
 	-- Banner toggle
 	----------------------------------------------------------------
-	local bannerVisible = false
 	function Window:SetBannerVisible(v)
-		bannerVisible = v
-		if v then
-			Banner.Visible = true
-			tween(Banner, { ImageTransparency = 0, BackgroundTransparency = 0, Position = UDim2.new(0, SIDEBAR_W / 2, 1, -14) }, 0.5)
-			tween(bannerStroke, { Transparency = 0.3 }, 0.5)
-			tween(TabList, { Size = UDim2.new(0, SIDEBAR_W - 16, 1, -(TABS_TOP + TABS_BOTTOM_WITH_BANNER)) }, 0.45)
-		else
-			tween(Banner, { ImageTransparency = 1, BackgroundTransparency = 1, Position = UDim2.new(0, SIDEBAR_W / 2, 1, BANNER_SIZE) }, 0.4)
-			tween(bannerStroke, { Transparency = 1 }, 0.3)
-			tween(TabList, { Size = UDim2.new(0, SIDEBAR_W - 16, 1, -(TABS_TOP + TABS_BOTTOM_NO_BANNER)) }, 0.45)
-			task.delay(0.45, function() if not bannerVisible then Banner.Visible = false end end)
-		end
-	end
-	if not Config.ShowBanner then
-		Banner.Visible = false
-		Banner.Position = UDim2.new(0, SIDEBAR_W / 2, 1, BANNER_SIZE)
-		TabList.Size = UDim2.new(0, SIDEBAR_W - 16, 1, -(TABS_TOP + TABS_BOTTOM_NO_BANNER))
+		bannerShown = v
+		applyBackground(true)
 	end
 
 	----------------------------------------------------------------
@@ -863,8 +949,8 @@ function VelocityHUB:CreateWindow(settings)
 		local function createCard(height)
 			local card = create("Frame", { BackgroundColor3 = Theme.Card, Size = UDim2.new(1, 0, 0, height), ClipsDescendants = true, LayoutOrder = nextOrder(), Parent = page })
 			corner(card, 10)
-			stroke(card, Theme.Stroke, 1, 0.45)
-			bindBG(card, "BackgroundTransparency", 0.12)
+			stroke(card, Color3.new(1, 1, 1), 1, 0.9)
+			bindBG(card, "BackgroundTransparency", 0.22)
 			return card
 		end
 		local function cardHover(hit, card)
@@ -881,7 +967,7 @@ function VelocityHUB:CreateWindow(settings)
 			local bar = create("Frame", { Position = UDim2.new(0, 2, 0.5, -6), Size = UDim2.fromOffset(3, 12), Parent = holder })
 			corner(bar, 2)
 			bindAccent(bar, "BackgroundColor3")
-			local lbl = newLabel({ Text = string.upper(text or "Section"), Font = Enum.Font.GothamBold, TextSize = 11, TextColor3 = Theme.SubText, Position = UDim2.new(0, 12, 0, 0), Size = UDim2.new(1, -12, 1, 0), Parent = holder })
+			local lbl = newLabel({ Text = string.upper(text or "Section"), Font = Fonts.Bold, TextSize = 11, TextColor3 = Theme.SubText, Position = UDim2.new(0, 12, 0, 0), Size = UDim2.new(1, -12, 1, 0), Parent = holder })
 			return { Set = function(_, t) lbl.Text = string.upper(t) end }
 		end
 
@@ -1067,7 +1153,7 @@ function VelocityHUB:CreateWindow(settings)
 
 			-- hex + rgb readout
 			local hexBox = create("TextBox", {
-				Font = Enum.Font.GothamBold, TextSize = 12, PlaceholderText = "#FFFFFF", PlaceholderColor3 = Theme.SubText, ClearTextOnFocus = false,
+				Font = Fonts.Bold, TextSize = 12, PlaceholderText = "#FFFFFF", PlaceholderColor3 = Theme.SubText, ClearTextOnFocus = false,
 				TextXAlignment = Enum.TextXAlignment.Center, BackgroundColor3 = Theme.Input, BackgroundTransparency = 0,
 				Position = UDim2.new(0, 14, 0, 174), Size = UDim2.fromOffset(100, 28), Parent = card,
 			})
@@ -1136,7 +1222,7 @@ function VelocityHUB:CreateWindow(settings)
 			local card = createCard(40)
 			newLabel({ Text = opts.Name or "Keybind", Position = UDim2.new(0, 14, 0, 0), Size = UDim2.new(1, -130, 1, 0), Parent = card })
 			local keyBtn = create("TextButton", {
-				Text = key.Name, Font = Enum.Font.GothamBold, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Center, TextTruncate = Enum.TextTruncate.AtEnd,
+				Text = key.Name, Font = Fonts.Bold, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Center, TextTruncate = Enum.TextTruncate.AtEnd,
 				BackgroundColor3 = Theme.Input, BackgroundTransparency = 0, AnchorPoint = Vector2.new(1, 0.5),
 				Position = UDim2.new(1, -10, 0.5, 0), Size = UDim2.fromOffset(100, 26), ZIndex = 3, Parent = card,
 			})
@@ -1183,6 +1269,214 @@ function VelocityHUB:CreateWindow(settings)
 			return register(opts, Keybind)
 		end
 
+		-- DIVIDER -----------------------------------------------------
+		function Tab:CreateDivider()
+			local holder = create("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 14), LayoutOrder = nextOrder(), Parent = page })
+			local line = create("Frame", { BackgroundColor3 = Color3.new(1, 1, 1), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.new(1, -8, 0, 1), Parent = holder })
+			create("UIGradient", {
+				Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.5, 0.8), NumberSequenceKeypoint.new(1, 1) }),
+				Parent = line,
+			})
+			local glint = create("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(46, 2), Parent = holder })
+			corner(glint, 1)
+			bindAccent(glint, "BackgroundColor3")
+			create("UIGradient", {
+				Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.5, 0.15), NumberSequenceKeypoint.new(1, 1) }),
+				Parent = glint,
+			})
+			return { Destroy = function() holder:Destroy() end }
+		end
+
+		-- TEXTBOX -----------------------------------------------------
+		function Tab:CreateTextBox(opts)
+			opts = opts or {}
+			local numbersOnly = opts.NumbersOnly == true
+			local card = createCard(46)
+			newLabel({ Text = opts.Name or "TextBox", Position = UDim2.new(0, 14, 0, 0), Size = UDim2.new(1, -200, 1, 0), Parent = card })
+
+			-- accent glow that fades in while focused
+			local glow = create("ImageLabel", {
+				Image = SHADOW_IMAGE, ScaleType = Enum.ScaleType.Slice, SliceCenter = Rect.new(49, 49, 450, 450), SliceScale = 0.4,
+				ImageTransparency = 1, AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -4, 0.5, 0), Size = UDim2.fromOffset(186, 46), ZIndex = 1, Parent = card,
+			})
+			bindAccent(glow, "ImageColor3")
+
+			local field = create("Frame", { BackgroundColor3 = Theme.Input, AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -12, 0.5, 0), Size = UDim2.fromOffset(170, 30), ZIndex = 2, Parent = card })
+			corner(field, 8)
+			local fieldStroke = stroke(field, Theme.Stroke, 1, 0)
+			local box = create("TextBox", {
+				Text = opts.CurrentValue ~= nil and tostring(opts.CurrentValue) or "",
+				PlaceholderText = opts.PlaceholderText or (numbersOnly and "0" or "Type here..."), PlaceholderColor3 = Theme.SubText,
+				ClearTextOnFocus = false, TextSize = 12, TextTruncate = Enum.TextTruncate.AtEnd,
+				Position = UDim2.new(0, 10, 0, 0), Size = UDim2.new(1, -20, 1, 0), ZIndex = 3, Parent = field,
+			})
+
+			local Textbox = { CurrentValue = numbersOnly and tonumber(box.Text) or box.Text }
+			local lastValid = box.Text
+			local filtering = false
+
+			if numbersOnly then
+				box:GetPropertyChangedSignal("Text"):Connect(function()
+					if filtering then return end
+					local filtered = string.gsub(box.Text, "[^%d%.%-]", "")
+					if filtered ~= box.Text then
+						filtering = true
+						box.Text = filtered
+						filtering = false
+					end
+				end)
+			end
+
+			box.Focused:Connect(function()
+				tween(fieldStroke, { Color = Theme.Accent, Thickness = 1.6 }, 0.25)
+				tween(glow, { ImageTransparency = 0.5 }, 0.3)
+			end)
+			box.FocusLost:Connect(function(enterPressed)
+				tween(fieldStroke, { Color = Theme.Stroke, Thickness = 1 }, 0.3)
+				tween(glow, { ImageTransparency = 1 }, 0.35)
+				local value = box.Text
+				if numbersOnly then
+					value = tonumber(box.Text)
+					if value == nil then
+						box.Text = lastValid -- reject junk such as "-" or "1.2.3"
+						return
+					end
+					if opts.Min then value = math.max(value, opts.Min) end
+					if opts.Max then value = math.min(value, opts.Max) end
+					box.Text = tostring(value)
+				end
+				lastValid = box.Text
+				Textbox.CurrentValue = value
+				safeCall(opts.Callback, value, enterPressed)
+				if opts.RemoveTextAfterFocusLost then box.Text = "" end
+			end)
+
+			function Textbox:Set(v, silent)
+				box.Text = tostring(v)
+				lastValid = box.Text
+				Textbox.CurrentValue = numbersOnly and tonumber(v) or box.Text
+				if not silent then safeCall(opts.Callback, Textbox.CurrentValue, false) end
+			end
+
+			local hit = create("TextButton", { Size = UDim2.new(1, -190, 1, 0), ZIndex = 3, Parent = card })
+			cardHover(hit, card)
+			hit.MouseButton1Click:Connect(function() box:CaptureFocus() end)
+			return register(opts, Textbox)
+		end
+
+		-- DROPDOWN ----------------------------------------------------
+		function Tab:CreateDropdown(opts)
+			opts = opts or {}
+			local options = opts.Options or {}
+			local HEADER, ITEM_H, ITEM_GAP, MAX_LIST = 42, 30, 3, 160
+			local expanded = false
+			local items = {}
+
+			local card = createCard(HEADER)
+			newLabel({ Text = opts.Name or "Dropdown", Position = UDim2.new(0, 14, 0, 0), Size = UDim2.new(1, -200, 0, HEADER), Parent = card })
+			local valueLbl = newLabel({
+				Text = "Select...", TextColor3 = Theme.SubText, TextXAlignment = Enum.TextXAlignment.Right, TextTruncate = Enum.TextTruncate.AtEnd,
+				AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -40, 0, 0), Size = UDim2.fromOffset(160, HEADER), Parent = card,
+			})
+
+			-- chevron drawn from two rotated bars (no external assets)
+			local chevron = create("Frame", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(1, -22, 0, HEADER / 2), Size = UDim2.fromOffset(16, 16), Parent = card })
+			local arms = {}
+			for _, def in ipairs({ { 5, 45 }, { 11, -45 } }) do
+				local arm = create("Frame", { BackgroundColor3 = Theme.SubText, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(def[1], 8), Size = UDim2.fromOffset(9, 2), Rotation = def[2], Parent = chevron })
+				corner(arm, 1)
+				table.insert(arms, arm)
+			end
+
+			local headHit = create("TextButton", { Size = UDim2.new(1, 0, 0, HEADER), ZIndex = 3, Parent = card })
+			cardHover(headHit, card)
+
+			local list = create("ScrollingFrame", {
+				BackgroundColor3 = Theme.Input, BackgroundTransparency = 0.15, Position = UDim2.new(0, 8, 0, HEADER + 2), Size = UDim2.new(1, -16, 0, 0),
+				CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollBarThickness = 2, ScrollingDirection = Enum.ScrollingDirection.Y, Parent = card,
+			})
+			corner(list, 8)
+			bindAccent(list, "ScrollBarImageColor3")
+			create("UIListLayout", { Padding = UDim.new(0, ITEM_GAP), SortOrder = Enum.SortOrder.LayoutOrder, Parent = list })
+			create("UIPadding", { PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 4), PaddingLeft = UDim.new(0, 4), PaddingRight = UDim.new(0, 6), Parent = list })
+
+			local Dropdown = { Options = options }
+			Dropdown.CurrentOption = type(opts.CurrentOption) == "table" and opts.CurrentOption[1] or opts.CurrentOption
+
+			local function listHeight()
+				return math.min(#options * (ITEM_H + ITEM_GAP) - ITEM_GAP + 8, MAX_LIST)
+			end
+
+			local function refreshVisuals()
+				valueLbl.Text = Dropdown.CurrentOption ~= nil and tostring(Dropdown.CurrentOption) or "Select..."
+				for _, it in ipairs(items) do
+					local selected = it.opt == Dropdown.CurrentOption
+					tween(it.btn, { BackgroundTransparency = selected and 0.8 or 1 }, 0.2)
+					tween(it.lbl, { TextColor3 = selected and Theme.Text or Theme.SubText }, 0.2)
+					tween(it.mark, { Size = UDim2.fromOffset(3, selected and 14 or 0) }, 0.3, Enum.EasingStyle.Back)
+				end
+			end
+
+			local function setExpanded(v)
+				expanded = v
+				local open = v and (HEADER + 2 + listHeight() + 8) or HEADER
+				tween(card, { Size = UDim2.new(1, 0, 0, open) }, 0.45)
+				tween(list, { Size = UDim2.new(1, -16, 0, v and listHeight() or 0) }, 0.45)
+				tween(chevron, { Rotation = v and 180 or 0 }, 0.4)
+				for _, arm in ipairs(arms) do tween(arm, { BackgroundColor3 = v and Theme.Accent or Theme.SubText }, 0.3) end
+			end
+
+			local function build()
+				for _, it in ipairs(items) do it.btn:Destroy() end
+				table.clear(items)
+				for i, opt in ipairs(options) do
+					local btn = create("TextButton", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, ITEM_H), LayoutOrder = i, Parent = list })
+					corner(btn, 7)
+					bindAccent(btn, "BackgroundColor3")
+					local mark = create("Frame", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 3, 0.5, 0), Size = UDim2.fromOffset(3, 0), Parent = btn })
+					corner(mark, 2)
+					bindAccent(mark, "BackgroundColor3")
+					local lbl = newLabel({ Text = tostring(opt), TextColor3 = Theme.SubText, TextTruncate = Enum.TextTruncate.AtEnd, Position = UDim2.new(0, 16, 0, 0), Size = UDim2.new(1, -24, 1, 0), Parent = btn })
+					btn.MouseEnter:Connect(function() if opt ~= Dropdown.CurrentOption then tween(btn, { BackgroundTransparency = 0.92 }, 0.15) end end)
+					btn.MouseLeave:Connect(function() if opt ~= Dropdown.CurrentOption then tween(btn, { BackgroundTransparency = 1 }, 0.2) end end)
+					btn.MouseButton1Click:Connect(function()
+						Dropdown:Set(opt)
+						setExpanded(false)
+					end)
+					table.insert(items, { opt = opt, btn = btn, lbl = lbl, mark = mark })
+				end
+				refreshVisuals()
+			end
+
+			function Dropdown:Set(opt, silent)
+				Dropdown.CurrentOption = opt
+				refreshVisuals()
+				if not silent then safeCall(opts.Callback, opt) end
+			end
+
+			function Dropdown:Refresh(newOptions)
+				options = newOptions or {}
+				Dropdown.Options = options
+				local stillThere = false
+				for _, o in ipairs(options) do if o == Dropdown.CurrentOption then stillThere = true end end
+				if not stillThere then Dropdown.CurrentOption = nil end
+				build()
+				if expanded then setExpanded(true) end
+			end
+
+			build()
+			headHit.MouseButton1Click:Connect(function() setExpanded(not expanded) end)
+
+			-- close when clicking anywhere outside the dropdown
+			connect(UserInputService.InputBegan, function(input)
+				if expanded and isPress(input) then
+					local p, a, sz = input.Position, card.AbsolutePosition, card.AbsoluteSize
+					if p.X < a.X or p.X > a.X + sz.X or p.Y < a.Y or p.Y > a.Y + sz.Y then setExpanded(false) end
+				end
+			end)
+			return register(opts, Dropdown)
+		end
+
 		return Tab
 	end
 
@@ -1224,11 +1518,12 @@ function VelocityHUB:CreateWindow(settings)
 		Callback = function(val) setBGTransparency(val / 100) end,
 	})
 	Settings:CreateToggle({
-		Name = "Show VelocityHUB Banner",
+		Name = "Show Banner Background",
 		CurrentValue = Config.ShowBanner,
 		Callback = function(val) Window:SetBannerVisible(val) end,
 	})
 
+	Settings:CreateDivider()
 	Settings:CreateSection("Controls")
 	Settings:CreateKeybind({
 		Name = "Toggle GUI Keybind",
@@ -1239,6 +1534,7 @@ function VelocityHUB:CreateWindow(settings)
 		end,
 	})
 
+	Settings:CreateDivider()
 	Settings:CreateSection("Interface")
 	Settings:CreateButton({ Name = "Unload " .. windowName, Callback = function() VelocityHUB:Destroy() end })
 	Settings:CreateLabel(windowName .. " - built with VelocityHUB UI Library v1.0.0")
@@ -1247,13 +1543,7 @@ function VelocityHUB:CreateWindow(settings)
 	-- Open animation
 	----------------------------------------------------------------
 	tween(uiScale, { Scale = baseScale }, 0.65, Enum.EasingStyle.Back)
-	if Config.ShowBanner then
-		bannerVisible = true
-		task.delay(0.35, function()
-			tween(Banner, { ImageTransparency = 0, BackgroundTransparency = 0 }, 0.6)
-			tween(bannerStroke, { Transparency = 0.3 }, 0.6)
-		end)
-	end
+	task.delay(0.25, function() applyBackground(true) end)
 
 	-- If the developer made no tabs, fall back to Settings
 	task.defer(function()
@@ -1268,21 +1558,35 @@ end
 --==================================================================--
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
 local LocalPlayer = Players.LocalPlayer
 
 local Window = VelocityHUB:CreateWindow({
 	Name = "VelocityHUB",
-	ToggleKey = Enum.KeyCode.RightShift,
+	ToggleKey = Enum.KeyCode.RightControl,
 })
 
+--==================================================================--
+--  MAIN SEKME (AUTO FARM)
+--==================================================================--
 local MainTab = Window:CreateTab("Main")
 MainTab:CreateSection("Sistem Ayarları")
 
 local testConnection = nil
 local clickThread = nil
 local currentTarget = nil
+local farmEnabled = false
 
--- En yakın uygun NPC'yi bulma fonksiyonu
+local hitHeight = 5
+local punchDelay = 0.6
+local useSkills = false
+
+local activeSkills = {
+	F = false, Z = false, X = false, C = false, V = false,
+	B = false, N = false, K = false, L = false, J = false
+}
+local skillOrder = {"F", "Z", "X", "C", "V", "B", "N", "K", "L", "J"}
+
 local function getClosestNPC()
 	local char = LocalPlayer.Character
 	local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -1291,26 +1595,20 @@ local function getClosestNPC()
 	local closest = nil
 	local minDist = math.huge
 
-	-- Klasör yapısını takip ediyoruz
 	local humanoidsFolder = workspace:FindFirstChild("Humanoids")
 	if humanoidsFolder then
 		local regionsFolder = humanoidsFolder:FindFirstChild("Regions")
 		if regionsFolder then
-			-- Bölgeler (isimleri rastgele olduğu için hepsini döngüye alıyoruz)
 			for _, region in ipairs(regionsFolder:GetChildren()) do
 				local activeNpcs = region:FindFirstChild("ActiveNpcs")
 				if activeNpcs then
-					-- ActiveNpcs içindeki klasörleri tarıyoruz
 					for _, folder in ipairs(activeNpcs:GetChildren()) do
-						-- Klasörse ve adında "Civilian" geçmiyorsa
 						if folder:IsA("Folder") and not string.find(folder.Name, "Civilian") then
-							-- Klasör içindeki modellere (NPC'lere) bakıyoruz
 							for _, npc in ipairs(folder:GetChildren()) do
 								if npc:IsA("Model") then
 									local targetHrp = npc.PrimaryPart or npc:FindFirstChild("HumanoidRootPart") or npc:FindFirstChildWhichIsA("BasePart")
 									local hum = npc:FindFirstChildOfClass("Humanoid")
 									
-									-- NPC'nin canı olup olmadığını kontrol et
 									local isAlive = true
 									if hum and hum.Health <= 0 then
 										isAlive = false
@@ -1331,23 +1629,21 @@ local function getClosestNPC()
 			end
 		end
 	end
-
 	return closest
 end
 
 MainTab:CreateToggle({
-	Name = "test (NPC Farm)",
+	Name = "Auto Farm (Bölge NPC)",
 	CurrentValue = false,
-	Flag = "TestToggle",
+	Flag = "FarmToggle",
 	Callback = function(enabled)
+		farmEnabled = enabled
 		if enabled then
-			-- Işınlanma ve takip döngüsü
 			testConnection = RunService.Heartbeat:Connect(function()
 				local char = LocalPlayer.Character
 				local hrp = char and char:FindFirstChild("HumanoidRootPart")
 				if not hrp then return end
 
-				-- Mevcut hedef silinmişse veya ölmüşse yeni hedef ara
 				local needNewTarget = false
 				if not currentTarget or not currentTarget.Parent then
 					needNewTarget = true
@@ -1358,24 +1654,18 @@ MainTab:CreateToggle({
 					end
 				end
 
-				-- Yeni hedefe ihtiyaç varsa bul
 				if needNewTarget then
 					currentTarget = getClosestNPC()
 				end
 
-				-- Eğer geçerli bir hedef varsa
 				if currentTarget then
 					local targetPart = currentTarget.PrimaryPart or currentTarget:FindFirstChild("HumanoidRootPart") or currentTarget:FindFirstChildWhichIsA("BasePart")
 					
 					if targetPart then
-						-- Karakterin aşağı düşmemesi için ivmeyi sıfırla
 						hrp.Velocity = Vector3.zero
 						hrp.RotVelocity = Vector3.zero
 						
-						-- Hedefin 5 stud yukarısına pozisyon al
-						local topPosition = targetPart.Position + Vector3.new(0, 5, 0)
-						
-						-- CFrame.lookAt(BenimKonumum, BakacağımKonum) kullanarak karakterin yüzünü tam olarak aşağıdaki NPC'ye döndürüyoruz
+						local topPosition = targetPart.Position + Vector3.new(0, hitHeight, 0)
 						hrp.CFrame = CFrame.lookAt(topPosition, targetPart.Position)
 					else
 						currentTarget = nil
@@ -1383,27 +1673,47 @@ MainTab:CreateToggle({
 				end
 			end)
 
-			-- Sürekli sol tıklama (Vurma) döngüsü
 			clickThread = task.spawn(function()
-				while task.wait(0.1) do
+				task.wait(2)
+				while farmEnabled do
 					if currentTarget then
-						pcall(function()
-							if mouse1click then
-								mouse1click()
-							else
-								local vim = game:GetService("VirtualInputManager")
-								vim:SendMouseButtonEvent(0, 0, 0, true, game, 0)
-								task.wait(0.01)
-								vim:SendMouseButtonEvent(0, 0, 0, false, game, 0)
+						for i = 1, 5 do
+							pcall(function()
+								if mouse1click then
+									mouse1click()
+								else
+									VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
+									task.wait(0.01)
+									VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
+								end
+							end)
+							if i < 5 then
+								task.wait(punchDelay)
 							end
-						end)
+						end
+
+						if useSkills then
+							for _, keyStr in ipairs(skillOrder) do
+								if activeSkills[keyStr] and currentTarget then
+									pcall(function()
+										VirtualInputManager:SendKeyEvent(true, Enum.KeyCode[keyStr], false, game)
+										task.wait(0.05)
+										VirtualInputManager:SendKeyEvent(false, Enum.KeyCode[keyStr], false, game)
+									end)
+									task.wait(0.5)
+								end
+							end
+						else
+							task.wait(punchDelay)
+						end
+					else
+						task.wait(0.1)
 					end
 				end
 			end)
 
-			Window:Notify({ Title = "Sistem", Content = "Bölge NPC farmı başlatıldı.", Type = "Success", Duration = 3 })
+			Window:Notify({ Title = "Sistem", Content = "Farm başlatıldı!", Type = "Success", Duration = 3 })
 		else
-			-- Kapatıldığında döngüleri ve tıklamayı durdur
 			if testConnection then
 				testConnection:Disconnect()
 				testConnection = nil
@@ -1419,9 +1729,207 @@ MainTab:CreateToggle({
 	end,
 })
 
+MainTab:CreateSlider({
+	Name = "Vurma Yüksekliği",
+	Range = { 1, 10 },
+	Increment = 1,
+	Suffix = " stud",
+	CurrentValue = 5,
+	Callback = function(value)
+		hitHeight = value
+	end,
+})
+
+MainTab:CreateSlider({
+	Name = "Yumruk Hızı",
+	Range = { 0, 1.5 },
+	Increment = 0.1,
+	Suffix = " sn",
+	CurrentValue = 0.6,
+	Callback = function(value)
+		punchDelay = value
+	end,
+})
+
+MainTab:CreateToggle({
+	Name = "Yetenek Kullanımı",
+	CurrentValue = false,
+	Callback = function(val)
+		useSkills = val
+	end,
+})
+
+MainTab:CreateSection("Kullanılacak Yetenekler (Harfler)")
+
+for _, key in ipairs(skillOrder) do
+	MainTab:CreateToggle({
+		Name = "Yetenek: " .. key,
+		CurrentValue = false,
+		Callback = function(val)
+			activeSkills[key] = val
+		end,
+	})
+end
+
+
+--==================================================================--
+--  PLAYER SEKME (CLONE & KAÇIŞ SİSTEMİ)
+--==================================================================--
+local PlayerTab = Window:CreateTab("Player")
+PlayerTab:CreateSection("Clone & Kaçış Sistemi")
+
+local currentClone = nil
+local autoTpEnabled = false
+local autoTpHealth = 25
+local healthCheckConnection = nil
+
+-- Otomatik Işınlanma Toggle
+PlayerTab:CreateToggle({
+	Name = "Canın Şu kadar kaldığında Clone a ışınlan",
+	CurrentValue = false,
+	Callback = function(val)
+		autoTpEnabled = val
+		if val then
+			healthCheckConnection = RunService.Heartbeat:Connect(function()
+				if autoTpEnabled and currentClone and currentClone.Parent then
+					local char = LocalPlayer.Character
+					if char then
+						local hum = char:FindFirstChildOfClass("Humanoid")
+						local hrp = char:FindFirstChild("HumanoidRootPart")
+						local cloneHrp = currentClone:FindFirstChild("HumanoidRootPart")
+						
+						if hum and hrp and cloneHrp and hum.Health > 0 and hum.Health <= autoTpHealth then
+							if (hrp.Position - cloneHrp.Position).Magnitude > 10 then
+								hrp.CFrame = cloneHrp.CFrame
+								Window:Notify({Title = "Acil Durum", Content = "Canın azaldı, Clone'a kaçtın!", Type = "Success", Duration = 3})
+							end
+						end
+					end
+				end
+			end)
+		else
+			if healthCheckConnection then
+				healthCheckConnection:Disconnect()
+				healthCheckConnection = nil
+			end
+		end
+	end,
+})
+
+-- Işınlanma Can Sınırı Slider
+PlayerTab:CreateSlider({
+	Name = "Işınlanma Can Sınırı",
+	Range = { 1, 200 },
+	Increment = 1,
+	Suffix = " HP",
+	CurrentValue = 25,
+	Callback = function(val)
+		autoTpHealth = val
+	end,
+})
+
+-- Klon Oluşturma Toggle
+PlayerTab:CreateToggle({
+	Name = "Clone oluştur",
+	CurrentValue = false,
+	Callback = function(val)
+		if val then
+			local char = LocalPlayer.Character
+			if char then
+				char.Archivable = true
+				currentClone = char:Clone()
+				currentClone.Name = LocalPlayer.Name .. "_Clone"
+				char.Archivable = false
+				
+				local highlight = Instance.new("Highlight")
+				highlight.FillColor = Color3.new(0, 0, 0)
+				highlight.OutlineColor = Color3.new(0, 0, 0)
+				highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+				highlight.Parent = currentClone
+				
+				for _, part in ipairs(currentClone:GetDescendants()) do
+					if part:IsA("BasePart") then
+						part.Anchored = true
+						part.CanCollide = false
+					end
+				end
+				
+				currentClone.Parent = workspace
+				Window:Notify({Title = "Clone", Content = "Clone oluşturuldu ve sabitlendi.", Type = "Success", Duration = 2})
+			end
+		else
+			if currentClone then
+				currentClone:Destroy()
+				currentClone = nil
+				Window:Notify({Title = "Clone", Content = "Clone silindi.", Type = "Error", Duration = 2})
+			end
+		end
+	end,
+})
+
+-- Klon'a TP Butonu
+PlayerTab:CreateButton({
+	Name = "TP Clone",
+	Callback = function()
+		if currentClone and currentClone:FindFirstChild("HumanoidRootPart") then
+			local char = LocalPlayer.Character
+			local hrp = char and char:FindFirstChild("HumanoidRootPart")
+			if hrp then
+				hrp.CFrame = currentClone.HumanoidRootPart.CFrame
+				Window:Notify({Title = "TP", Content = "Clone'a ışınlandın.", Type = "Success", Duration = 2})
+			end
+		else
+			Window:Notify({Title = "Hata", Content = "Önce bir Clone oluşturmalısın!", Type = "Error", Duration = 2})
+		end
+	end,
+})
+
+-- Tuş ile Klon'a TP
+PlayerTab:CreateKeybind({
+	Name = "Tuş ile Clone'a Işınlan",
+	CurrentKeybind = Enum.KeyCode.G,
+	Callback = function(key)
+		if currentClone and currentClone:FindFirstChild("HumanoidRootPart") then
+			local char = LocalPlayer.Character
+			local hrp = char and char:FindFirstChild("HumanoidRootPart")
+			if hrp then
+				hrp.CFrame = currentClone.HumanoidRootPart.CFrame
+				Window:Notify({Title = "TP", Content = key.Name .. " tuşu ile Clone'a ışınlandın.", Type = "Success", Duration = 2})
+			end
+		else
+			Window:Notify({Title = "Hata", Content = "Önce bir Clone oluşturmalısın!", Type = "Error", Duration = 2})
+		end
+	end,
+})
+
 Window:Notify({
 	Title = "VelocityHUB",
-	Content = "Yüklendi! Menüyü aç/kapat yapmak için RightShift tuşunu kullan.",
+	Content = "Yüklendi! Menüyü aç/kapat yapmak için " .. Window.ToggleKey.Name .. " tuşunu kullan.",
 	Type = "Success",
 	Duration = 5,
 })
+
+--[[
+	YENİ MODÜLLER - ÖRNEK (kullanmak için yorum satırlarını kaldırın)
+
+	PlayerTab:CreateDivider()
+
+	PlayerTab:CreateTextBox({
+		Name = "Hedef Oyuncu",
+		PlaceholderText = "Oyuncu adı...",
+		Callback = function(text) print("Yazılan:", text) end,
+	})
+
+	PlayerTab:CreateTextBox({
+		Name = "WalkSpeed",
+		NumbersOnly = true, Min = 16, Max = 200, CurrentValue = 16,
+		Callback = function(n) print("Sayı:", n) end,
+	})
+
+	PlayerTab:CreateDropdown({
+		Name = "Bölge Seç",
+		Options = { "Region 1", "Region 2", "Region 3" },
+		CurrentOption = "Region 1",
+		Callback = function(option) print("Seçilen:", option) end,
+	})
+]]
