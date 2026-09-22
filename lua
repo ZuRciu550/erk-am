@@ -1558,6 +1558,7 @@ end
 --==================================================================--
 local LocalPlayer = Players.LocalPlayer
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 
 local Window = VelocityHUB:CreateWindow({
@@ -1565,13 +1566,19 @@ local Window = VelocityHUB:CreateWindow({
 	ToggleKey = Enum.KeyCode.RightControl,
 })
 
+--==================================================================--
+--  MAIN SEKME (FARM & CHEST SİSTEMİ)
+--==================================================================--
 local MainTab = Window:CreateTab("Main")
 
--- DEĞİŞKENLER & ANAHTARLAR
+-- Farm Değişkenleri
 local autoFarmEnabled = false
 local npcFarmEnabled = false
 local autoChestEnabled = false
-local isChestPriority = false -- Sandık toplanırken Farm'ı durduracak kilit
+local autoSealedEnabled = false
+
+local isChestPriority = false
+local isSealedPriority = false -- Korunan sandık farmı önceliği
 
 local currentTarget = nil
 local hitHeight = 5
@@ -1588,9 +1595,6 @@ local activeSkills = {
 }
 local skillOrder = {"F", "Z", "X", "C", "V", "B", "N", "K", "L", "J"}
 
---==================================================================--
---  YARDIMCI FONKSİYONLAR (HEDEF BULMA)
---==================================================================--
 local function refreshNpcList()
 	local tempDict = {}
 	npcNamesList = {}
@@ -1627,7 +1631,6 @@ local function refreshNpcList()
 end
 refreshNpcList()
 
--- NPC Farm İçin: Sadece Seçilen NPC'yi Bul
 local function getSmartTarget(targetName)
 	local char = LocalPlayer.Character
 	local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -1673,7 +1676,6 @@ local function getSmartTarget(targetName)
 	return closestExact or closestFallback
 end
 
--- Auto Farm İçin: En Yakın Düşmanı (Siviller Hariç) Bul
 local function getNearestEnemy()
 	local char = LocalPlayer.Character
 	local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -1690,7 +1692,6 @@ local function getNearestEnemy()
 				local activeNpcs = region:FindFirstChild("ActiveNpcs")
 				if activeNpcs then
 					for _, folder in ipairs(activeNpcs:GetChildren()) do
-						-- Sivil klasörlerini yok sayıyoruz
 						if folder:IsA("Folder") and not string.find(folder.Name:lower(), "civilian") then
 							for _, npc in ipairs(folder:GetChildren()) do
 								if npc:IsA("Model") then
@@ -1698,7 +1699,40 @@ local function getNearestEnemy()
 									local hum = npc:FindFirstChildOfClass("Humanoid")
 									if targetHrp and hum and hum.Health > 0 then
 										local dist = (targetHrp.Position - hrp.Position).Magnitude
-										if dist < minDist then
+										if dist < minDist then minDist = dist closest = npc end
+									end
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+	return closest
+end
+
+-- Raid Captain Bulma (Korunan Sandık İçin)
+local function getRaidCaptainNear(centerPos, radius)
+	local closest = nil
+	local minDist = radius
+	local humanoidsFolder = workspace:FindFirstChild("Humanoids")
+	if humanoidsFolder then
+		local regionsFolder = humanoidsFolder:FindFirstChild("Regions")
+		if regionsFolder then
+			for _, region in ipairs(regionsFolder:GetChildren()) do
+				local activeNpcs = region:FindFirstChild("ActiveNpcs")
+				if activeNpcs then
+					for _, folder in ipairs(activeNpcs:GetChildren()) do
+						-- Sadece "Raid Captain" adlı klasörleri tara
+						if folder.Name == "Raid Captain" then
+							for _, npc in ipairs(folder:GetChildren()) do
+								if npc:IsA("Model") then
+									local targetHrp = npc.PrimaryPart or npc:FindFirstChild("HumanoidRootPart") or npc:FindFirstChildWhichIsA("BasePart")
+									local hum = npc:FindFirstChildOfClass("Humanoid")
+									if targetHrp and hum and hum.Health > 0 then
+										local dist = (targetHrp.Position - centerPos).Magnitude
+										if dist <= minDist then
 											minDist = dist
 											closest = npc
 										end
@@ -1714,30 +1748,25 @@ local function getNearestEnemy()
 	return closest
 end
 
---==================================================================--
---  MERKEZİ FARM DÖNGÜSÜ (HEM AUTO HEM NPC FARM İÇİN)
---==================================================================--
+-- Farm Döngüsü (Anti-Cheat Hız Korumalı)
 RunService.Heartbeat:Connect(function()
-	-- Sandık toplanıyorsa, karakteri hareket ettirme
 	if isChestPriority then return end
-	
 	local char = LocalPlayer.Character
 	local hrp = char and char:FindFirstChild("HumanoidRootPart")
 	if not hrp then return end
 
-	-- Hangi Farm Açıksa Ona Göre Hedef Belirle
-	if npcFarmEnabled then
-		currentTarget = getSmartTarget(selectedNPC)
-	elseif autoFarmEnabled then
-		currentTarget = getNearestEnemy()
-	else
-		currentTarget = nil
+	-- Hedef Belirleme Sıralaması
+	if not isSealedPriority then
+		if npcFarmEnabled then currentTarget = getSmartTarget(selectedNPC)
+		elseif autoFarmEnabled then currentTarget = getNearestEnemy()
+		else currentTarget = nil end
 	end
+	-- Eğer isSealedPriority açıksa currentTarget korunan sandık farmı tarafından belirlenir
 
-	-- Hedef Varsa Işınlan
 	if currentTarget then
 		local targetPart = currentTarget.PrimaryPart or currentTarget:FindFirstChild("HumanoidRootPart") or currentTarget:FindFirstChildWhichIsA("BasePart")
 		if targetPart then
+			-- Oyunun Anti-Cheat'ine karşı sürekli hızı sıfırlayıp pozisyon koruma
 			hrp.Velocity = Vector3.zero
 			hrp.RotVelocity = Vector3.zero
 			local topPosition = targetPart.Position + Vector3.new(0, hitHeight, 0)
@@ -1750,17 +1779,14 @@ task.spawn(function()
 	while true do
 		task.wait(0.1)
 		
-		-- Sandık toplanıyorsa veya Farm kapalıysa saldırmayı bekle
-		if isChestPriority or (not npcFarmEnabled and not autoFarmEnabled) or not currentTarget then 
-			continue 
-		end
+		if isChestPriority or not currentTarget then continue end
+		if not isSealedPriority and not npcFarmEnabled and not autoFarmEnabled then continue end
 		
 		for i = 1, 5 do
-			if isChestPriority or not currentTarget or (not npcFarmEnabled and not autoFarmEnabled) then break end
+			if isChestPriority or not currentTarget then break end
+			if not isSealedPriority and not npcFarmEnabled and not autoFarmEnabled then break end
 			pcall(function()
-				if mouse1click then
-					mouse1click()
-				else
+				if mouse1click then mouse1click() else
 					VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
 					task.wait(0.01)
 					VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
@@ -1784,170 +1810,356 @@ task.spawn(function()
 	end
 end)
 
---==================================================================--
---  MENÜ (UI) TASARIMI - FARM BÖLÜMÜ
---==================================================================--
-MainTab:CreateSection("Farm Seçenekleri")
+MainTab:CreateSection("Gelişmiş Farm Sistemi")
+MainTab:CreateToggle({ Name = "Genel Auto Farm (En Yakın)", CurrentValue = false, Callback = function(val) autoFarmEnabled = val if val then npcFarmEnabled = false end end })
+MainTab:CreateToggle({ Name = "Özel NPC Farm (Seçilen)", CurrentValue = false, Callback = function(val) npcFarmEnabled = val if val then autoFarmEnabled = false end end })
 
-MainTab:CreateToggle({
-	Name = "Genel Auto Farm (En Yakın Düşman)",
-	CurrentValue = false,
-	Callback = function(val)
-		autoFarmEnabled = val
-		if val then npcFarmEnabled = false end
-		Window:Notify({ Title = "Auto Farm", Content = val and "Başlatıldı." or "Durduruldu.", Type = val and "Success" or "Error", Duration = 2 })
-	end,
-})
-
-MainTab:CreateDivider()
-
-MainTab:CreateToggle({
-	Name = "Özel NPC Farm (Sadece Seçileni Keser)",
-	CurrentValue = false,
-	Callback = function(val)
-		npcFarmEnabled = val
-		if val then autoFarmEnabled = false end 
-		Window:Notify({ Title = "NPC Farm", Content = val and "Başlatıldı." or "Durduruldu.", Type = val and "Success" or "Error", Duration = 2 })
-	end,
-})
-
-local npcDropdown = MainTab:CreateDropdown({
-	Name = "Hedef NPC Seç",
-	Options = npcNamesList,
-	CurrentOption = npcNamesList[1],
-	Callback = function(val)
-		selectedNPC = val
-	end,
-})
-
-MainTab:CreateButton({
-	Name = "NPC Listesini Yenile",
-	Callback = function()
-		npcDropdown:Refresh(refreshNpcList())
-		Window:Notify({ Title = "Sistem", Content = "Liste güncellendi.", Type = "Success", Duration = 2 })
-	end,
-})
+local npcDropdown = MainTab:CreateDropdown({ Name = "Hedef NPC Seç", Options = npcNamesList, CurrentOption = npcNamesList[1], Callback = function(val) selectedNPC = val end })
+MainTab:CreateButton({ Name = "NPC Listesini Yenile", Callback = function() npcDropdown:Refresh(refreshNpcList()) end })
 
 MainTab:CreateDivider()
 MainTab:CreateSlider({ Name = "Vurma Yüksekliği", Range = { 1, 10 }, Increment = 1, Suffix = " stud", CurrentValue = 5, Callback = function(v) hitHeight = v end })
 MainTab:CreateSlider({ Name = "Yumruk Hızı", Range = { 0, 1.5 }, Increment = 0.1, Suffix = " sn", CurrentValue = 0.6, Callback = function(v) punchDelay = v end })
 MainTab:CreateToggle({ Name = "Yetenek Kullanımı", CurrentValue = false, Callback = function(v) useSkills = v end })
 
+MainTab:CreateDivider()
 MainTab:CreateSection("Kullanılacak Yetenekler")
 for _, key in ipairs(skillOrder) do
 	MainTab:CreateToggle({ Name = "Yetenek: " .. key, CurrentValue = false, Callback = function(val) activeSkills[key] = val end })
 end
 
---==================================================================--
---  AUTO CHEST & LOOT SİSTEMİ (ÖNCELİKLİ)
---==================================================================--
 MainTab:CreateDivider()
-MainTab:CreateSection("Otomatik Kutu & Loot")
-
--- Promt Tetikleyici
-local function firePrompt(prompt)
-	if fireproximityprompt then
-		fireproximityprompt(prompt, 1, true)
-	else
-		prompt:InputHoldBegin()
-		task.wait(prompt.HoldDuration > 0 and prompt.HoldDuration + 0.1 or 0.15)
-		prompt:InputHoldEnd()
-	end
-end
+MainTab:CreateSection("Otomatik Sandık (Sıfır Bekleme & T Tuşu)")
 
 MainTab:CreateToggle({
-	Name = "Auto Collect Chest",
+	Name = "Auto Collect Chest (Normal Sandıklar)",
 	CurrentValue = false,
 	Callback = function(val)
 		autoChestEnabled = val
 		if val then
-			Window:Notify({ Title = "Sistem", Content = "Auto Chest başlatıldı. Farm'ı duraklatarak toplayacak.", Type = "Success", Duration = 3 })
+			Window:Notify({ Title = "Sistem", Content = "Normal Chest Farm Başladı.", Type = "Success", Duration = 3 })
 			
 			task.spawn(function()
 				while autoChestEnabled do
 					local char = LocalPlayer.Character
 					local hrp = char and char:FindFirstChild("HumanoidRootPart")
-					
 					if not hrp then task.wait(0.5) continue end
 					
 					local foundSomething = false
-					local lootFolder = workspace:FindFirstChild("LootDrops")
-					local chestsFolder = workspace:FindFirstChild("Chests")
+					local targetPrompts = {}
 					
-					-- 1. LOOTLARI TOPLA
-					if lootFolder then
-						for _, drop in ipairs(lootFolder:GetChildren()) do
-							if not autoChestEnabled then break end
-							if drop.Name == "LootDrop" and drop:IsA("BasePart") and drop.Parent then
-								local prompt = drop:FindFirstChildWhichIsA("ProximityPrompt", true)
-								if prompt and prompt.Enabled then
-									foundSomething = true
-									isChestPriority = true -- FARM'I DURDUR
-									
-									hrp.Velocity = Vector3.zero
-									hrp.CFrame = drop.CFrame
-									task.wait(0.2)
-									firePrompt(prompt)
-									task.wait(0.15)
-								end
+					-- Sandıkları Topla (Sealed OLANLARI ATLA)
+					for _, obj in ipairs(workspace:GetDescendants()) do
+						if obj:IsA("ProximityPrompt") and (obj.Name == "LootDropPrompt" or obj.Name == "ChestPrompt") and obj.Enabled then
+							local model = obj:FindFirstAncestorWhichIsA("Model")
+							-- Eğer adı Sealed ile başlıyorsa bu döngüde dahil etme
+							if model and string.find(model.Name, "Sealed") == 1 then
+								continue
+							end
+							table.insert(targetPrompts, obj)
+						end
+					end
+					
+					for _, prompt in ipairs(targetPrompts) do
+						if not autoChestEnabled then break end
+						if prompt and prompt.Parent and prompt.Enabled then
+							foundSomething = true
+							isChestPriority = true -- Karakter hareketini (Farm'ı) durdur
+							
+							local targetPart = prompt.Parent
+							if not targetPart:IsA("BasePart") then
+								targetPart = prompt:FindFirstAncestorWhichIsA("BasePart") or (prompt:FindFirstAncestorWhichIsA("Model") and prompt:FindFirstAncestorWhichIsA("Model").PrimaryPart)
+							end
+							
+							if targetPart then
+								hrp.Velocity = Vector3.zero
+								hrp.CFrame = targetPart.CFrame * CFrame.new(0, 2, 0)
+								task.wait(0.2)
+								
+								-- Hold süresini 0'a zorla
+								pcall(function() prompt.HoldDuration = 0 end)
+								task.wait(0.1)
+								
+								-- T Tuşuna Bas (Aç)
+								VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.T, false, game)
+								task.wait(0.05)
+								VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.T, false, game)
+								
+								task.wait(0.6) -- Animasyon ve loot dökülmesi için bekle
 							end
 						end
 					end
+					
+					if not foundSomething then isChestPriority = false end
+					task.wait(0.5)
+				end
+				isChestPriority = false
+			end)
+		else
+			isChestPriority = false
+		end
+	end,
+})
 
-					-- 2. SANDIKLARI AÇ (RootPart/MeshPart fark etmeksizin)
-					if chestsFolder and not foundSomething then
+-- KORUNAN SANDIK SİSTEMİ (YENİ EKLENEN)
+MainTab:CreateToggle({
+	Name = "Korunan Sandık (Sealed Chest Farm)",
+	CurrentValue = false,
+	Callback = function(val)
+		autoSealedEnabled = val
+		if val then
+			Window:Notify({ Title = "Sistem", Content = "Korunan sandık farmı başladı (Raid Captain bekçileri temizlenecek).", Type = "Success", Duration = 3 })
+			
+			task.spawn(function()
+				while autoSealedEnabled do
+					local char = LocalPlayer.Character
+					local hrp = char and char:FindFirstChild("HumanoidRootPart")
+					if not hrp then task.wait(0.5) continue end
+					
+					local foundSealed = false
+					local chestsFolder = workspace:FindFirstChild("Chests")
+					
+					if chestsFolder then
 						for _, chest in ipairs(chestsFolder:GetChildren()) do
-							if not autoChestEnabled then break end
+							if not autoSealedEnabled then break end
 							
-							if chest:IsA("Model") and chest.Parent then
-								-- RootPart veya herhangi bir BasePart'ı güvenli yakalama
+							-- Yalnızca adı "Sealed" ile başlayanları bul
+							if chest:IsA("Model") and string.find(chest.Name, "Sealed") == 1 then
 								local rootPart = chest:FindFirstChild("RootPart") or chest.PrimaryPart or chest:FindFirstChildWhichIsA("BasePart")
-								
 								if rootPart then
-									-- Sandığın içindeki ChestPrompt'u bul (derinlemesine arar, parçanın tipini umursamaz)
-									local prompt = rootPart:FindFirstChild("ChestPrompt") or chest:FindFirstChild("ChestPrompt", true)
-									
+									local prompt = chest:FindFirstChild("ChestPrompt", true)
 									if prompt and prompt:IsA("ProximityPrompt") and prompt.Enabled then
-										foundSomething = true
-										isChestPriority = true -- FARM'I DURDUR
+										foundSealed = true
 										
-										hrp.Velocity = Vector3.zero
-										-- Prompt hangi parçaya bağlıysa tam oraya ışınlan
-										local targetPart = prompt.Parent:IsA("BasePart") and prompt.Parent or rootPart
+										-- Sandığın 100 stud yakınındaki Raid Captain'leri bul
+										local raidBoss = getRaidCaptainNear(rootPart.Position, 100)
 										
-										hrp.CFrame = targetPart.CFrame * CFrame.new(0, 2, 0)
-										task.wait(0.3)
-										
-										firePrompt(prompt)
-										task.wait(0.8) -- Lootların düşmesini bekle
-										break -- Döngüyü kırıp düşen lootları toplamaya çıksın
+										if raidBoss then
+											-- Raid Captain Hayatta! Sandığı açmayı durdur, bossu kes
+											isSealedPriority = true
+											currentTarget = raidBoss
+										else
+											-- Korumalar Öldü! Sandığı açmaya başla
+											isSealedPriority = false
+											isChestPriority = true -- Farm tamamen dursun
+											currentTarget = nil
+											
+											hrp.Velocity = Vector3.zero
+											local targetPart = prompt.Parent:IsA("BasePart") and prompt.Parent or rootPart
+											hrp.CFrame = targetPart.CFrame * CFrame.new(0, 2, 0)
+											task.wait(0.3)
+											
+											-- Hold'u 0'a zorla
+											pcall(function() prompt.HoldDuration = 0 end)
+											task.wait(0.1)
+											
+											-- T bas ve aç
+											VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.T, false, game)
+											task.wait(0.05)
+											VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.T, false, game)
+											
+											task.wait(0.8)
+											isChestPriority = false
+										end
+										break -- Bir kerede tek Sealed sandığa odaklansın
 									end
 								end
 							end
 						end
 					end
 					
-					-- Eğer haritada sandık veya loot kalmadıysa Farm'ın devam etmesine izin ver
-					if not foundSomething then
-						isChestPriority = false
+					if not foundSealed then
+						isSealedPriority = false
 					end
 					
 					task.wait(0.1)
 				end
-				
-				isChestPriority = false -- Toggle kapatıldığında da kilidi aç
+				isSealedPriority = false
 			end)
 		else
-			isChestPriority = false
-			Window:Notify({ Title = "Sistem", Content = "Auto Chest durduruldu.", Type = "Error", Duration = 2 })
+			isSealedPriority = false
 		end
 	end,
 })
 
 --==================================================================--
---  PLAYER SEKME (CLONE & KAÇIŞ SİSTEMİ)
+--  PLAYER SEKME (KARAKTER AYARLARI)
 --==================================================================--
 local PlayerTab = Window:CreateTab("Player")
+
+-- Hız Ayarı
+local walkSpeed = 16
+local wsConnection
+PlayerTab:CreateSection("Karakter Fiziği")
+PlayerTab:CreateToggle({
+	Name = "Hız Hilesi (Speed)",
+	CurrentValue = false,
+	Callback = function(val)
+		if val then
+			wsConnection = RunService.Heartbeat:Connect(function()
+				if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
+					LocalPlayer.Character.Humanoid.WalkSpeed = walkSpeed
+				end
+			end)
+		else
+			if wsConnection then wsConnection:Disconnect() end
+			if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
+				LocalPlayer.Character.Humanoid.WalkSpeed = 16
+			end
+		end
+	end
+})
+PlayerTab:CreateSlider({ Name = "Hız Miktarı", Range = { 16, 300 }, Increment = 1, Suffix = " sps", CurrentValue = 16, Callback = function(v) walkSpeed = v end })
+
+-- Zıplama Ayarı
+local jumpPower = 50
+local jpConnection
+PlayerTab:CreateToggle({
+	Name = "Zıplama Gücü Hilesi",
+	CurrentValue = false,
+	Callback = function(val)
+		if val then
+			jpConnection = RunService.Heartbeat:Connect(function()
+				if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
+					LocalPlayer.Character.Humanoid.UseJumpPower = true
+					LocalPlayer.Character.Humanoid.JumpPower = jumpPower
+				end
+			end)
+		else
+			if jpConnection then jpConnection:Disconnect() end
+			if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
+				LocalPlayer.Character.Humanoid.JumpPower = 50
+			end
+		end
+	end
+})
+PlayerTab:CreateSlider({ Name = "Zıplama Miktarı", Range = { 50, 500 }, Increment = 1, Suffix = " jp", CurrentValue = 50, Callback = function(v) jumpPower = v end })
+
+-- Sonsuz Zıplama
+local infJumpConnection
+PlayerTab:CreateToggle({
+	Name = "Sonsuz Zıplama (Infinite Jump)",
+	CurrentValue = false,
+	Callback = function(val)
+		if val then
+			infJumpConnection = UserInputService.JumpRequest:Connect(function()
+				if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
+					LocalPlayer.Character.Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+				end
+			end)
+		else
+			if infJumpConnection then infJumpConnection:Disconnect() infJumpConnection = nil end
+		end
+	end
+})
+
+-- Duvara Tırmanma (Spider)
+local spiderConnection
+PlayerTab:CreateToggle({
+	Name = "Duvara Tırmanma (Spider)",
+	CurrentValue = false,
+	Callback = function(val)
+		if val then
+			spiderConnection = RunService.Stepped:Connect(function()
+				local char = LocalPlayer.Character
+				local hrp = char and char:FindFirstChild("HumanoidRootPart")
+				local hum = char and char:FindFirstChildOfClass("Humanoid")
+				if not hrp or not hum then return end
+				
+				local params = RaycastParams.new()
+				params.FilterDescendantsInstances = {char}
+				params.FilterType = Enum.RaycastFilterType.Exclude
+				
+				local result = workspace:Raycast(hrp.Position, hrp.CFrame.LookVector * 2.5, params)
+				if result and hum.MoveDirection.Magnitude > 0 then
+					hrp.Velocity = Vector3.new(hrp.Velocity.X, 35, hrp.Velocity.Z)
+				end
+			end)
+		else
+			if spiderConnection then spiderConnection:Disconnect() spiderConnection = nil end
+		end
+	end
+})
+
+-- Noclip
+local noclipConnection
+PlayerTab:CreateToggle({
+	Name = "Duvarlardan Geçme (Noclip)",
+	CurrentValue = false,
+	Callback = function(val)
+		if val then
+			noclipConnection = RunService.Stepped:Connect(function()
+				if LocalPlayer.Character then
+					for _, p in ipairs(LocalPlayer.Character:GetDescendants()) do
+						if p:IsA("BasePart") and p.CanCollide then
+							p.CanCollide = false
+						end
+					end
+				end
+			end)
+		else
+			if noclipConnection then noclipConnection:Disconnect() noclipConnection = nil end
+		end
+	end
+})
+
+PlayerTab:CreateDivider()
+
+-- Uçma (Fly)
+local flySpeed = 50
+local flyConnection
+PlayerTab:CreateSection("Uçma (Fly)")
+PlayerTab:CreateToggle({
+	Name = "Fly Aktif",
+	CurrentValue = false,
+	Callback = function(val)
+		local char = LocalPlayer.Character
+		local hrp = char and char:FindFirstChild("HumanoidRootPart")
+		if not hrp then return end
+		
+		if val then
+			local bv = Instance.new("BodyVelocity")
+			bv.Name = "VelocityFlyBV"
+			bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+			bv.Velocity = Vector3.new(0, 0, 0)
+			bv.Parent = hrp
+
+			local bg = Instance.new("BodyGyro")
+			bg.Name = "VelocityFlyBG"
+			bg.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+			bg.CFrame = hrp.CFrame
+			bg.Parent = hrp
+
+			flyConnection = RunService.RenderStepped:Connect(function()
+				local camera = workspace.CurrentCamera
+				local moveDir = Vector3.new(0,0,0)
+				
+				if UserInputService:IsKeyDown(Enum.KeyCode.W) then moveDir = moveDir + camera.CFrame.LookVector end
+				if UserInputService:IsKeyDown(Enum.KeyCode.S) then moveDir = moveDir - camera.CFrame.LookVector end
+				if UserInputService:IsKeyDown(Enum.KeyCode.A) then moveDir = moveDir - camera.CFrame.RightVector end
+				if UserInputService:IsKeyDown(Enum.KeyCode.D) then moveDir = moveDir + camera.CFrame.RightVector end
+				if UserInputService:IsKeyDown(Enum.KeyCode.Space) then moveDir = moveDir + Vector3.new(0,1,0) end
+				if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then moveDir = moveDir - Vector3.new(0,1,0) end
+
+				bv.Velocity = moveDir * flySpeed
+				bg.CFrame = camera.CFrame
+			end)
+		else
+			if flyConnection then flyConnection:Disconnect() flyConnection = nil end
+			local bv = hrp:FindFirstChild("VelocityFlyBV")
+			if bv then bv:Destroy() end
+			local bg = hrp:FindFirstChild("VelocityFlyBG")
+			if bg then bg:Destroy() end
+		end
+	end
+})
+PlayerTab:CreateSlider({ Name = "Fly Hızı", Range = { 10, 300 }, Increment = 5, Suffix = " vel", CurrentValue = 50, Callback = function(v) flySpeed = v end })
+
+
+--==================================================================--
+--  CLONE & KAÇIŞ SİSTEMİ
+--==================================================================--
+PlayerTab:CreateDivider()
 PlayerTab:CreateSection("Clone & Kaçış Sistemi")
 
 local currentClone = nil
@@ -2037,7 +2249,7 @@ PlayerTab:CreateKeybind({
 		if currentClone and currentClone:FindFirstChild("HumanoidRootPart") then
 			local char = LocalPlayer.Character
 			local hrp = char and char:FindFirstChild("HumanoidRootPart")
-			if hrp then hrp.CFrame = currentClone.HumanoidRootPart.CFrame Window:Notify({Title = "TP", Content = key.Name .. " tuşu ile ışınlandın.", Type = "Success", Duration = 2}) end
+			if hrp then hrp.CFrame = currentClone.HumanoidRootPart.CFrame end
 		end
 	end,
 })
