@@ -1578,15 +1578,16 @@ local autoChestEnabled = false
 local autoSealedEnabled = false
 
 local isChestPriority = false
-local isSealedPriority = false -- Korunan sandık farmı önceliği
+local isSealedPriority = false
 
 local currentTarget = nil
 local hitHeight = 5
 local punchDelay = 0.6
 local useSkills = false
-local selectedNPC = ""
 
-local npcTypes = {} 
+local selectedNPCs = {} -- Çoklu NPC seçimi için tablo
+local currentDropdownSelection = ""
+
 local npcNamesList = {"NPC Bekleniyor..."}
 
 local activeSkills = {
@@ -1598,7 +1599,6 @@ local skillOrder = {"F", "Z", "X", "C", "V", "B", "N", "K", "L", "J"}
 local function refreshNpcList()
 	local tempDict = {}
 	npcNamesList = {}
-	npcTypes = {}
 	
 	local humanoidsFolder = workspace:FindFirstChild("Humanoids")
 	if humanoidsFolder then
@@ -1609,13 +1609,11 @@ local function refreshNpcList()
 				if activeNpcs then
 					for _, folder in ipairs(activeNpcs:GetChildren()) do
 						if folder:IsA("Folder") then
-							local isCivilian = string.find(folder.Name:lower(), "civilian") ~= nil
 							for _, npc in ipairs(folder:GetChildren()) do
 								if npc:IsA("Model") and npc.Name ~= "" then
 									if not tempDict[npc.Name] then
 										tempDict[npc.Name] = true
 										table.insert(npcNamesList, npc.Name)
-										npcTypes[npc.Name] = isCivilian
 									end
 								end
 							end
@@ -1631,16 +1629,17 @@ local function refreshNpcList()
 end
 refreshNpcList()
 
-local function getSmartTarget(targetName)
+-- Çoklu Seçilmiş NPC'leri Hedefleme
+local function getSmartTarget(targetNamesTable)
+	-- Eğer listede hiç NPC yoksa hedef arama
+	if next(targetNamesTable) == nil then return nil end 
+
 	local char = LocalPlayer.Character
 	local hrp = char and char:FindFirstChild("HumanoidRootPart")
 	if not hrp then return nil end
 
-	local closestExact = nil
-	local minDistExact = math.huge
-	local closestFallback = nil
-	local minDistFallback = math.huge
-	local targetIsCivilian = npcTypes[targetName] == true
+	local closest = nil
+	local minDist = math.huge
 
 	local humanoidsFolder = workspace:FindFirstChild("Humanoids")
 	if humanoidsFolder then
@@ -1650,20 +1649,16 @@ local function getSmartTarget(targetName)
 				local activeNpcs = region:FindFirstChild("ActiveNpcs")
 				if activeNpcs then
 					for _, folder in ipairs(activeNpcs:GetChildren()) do
-						if folder:IsA("Folder") then
-							local folderIsCivilian = string.find(folder.Name:lower(), "civilian") ~= nil
-							for _, npc in ipairs(folder:GetChildren()) do
-								if npc:IsA("Model") then
-									local targetHrp = npc.PrimaryPart or npc:FindFirstChild("HumanoidRootPart") or npc:FindFirstChildWhichIsA("BasePart")
-									local hum = npc:FindFirstChildOfClass("Humanoid")
-									if targetHrp and hum and hum.Health > 0 then
-										local dist = (targetHrp.Position - hrp.Position).Magnitude
-										
-										if npc.Name == targetName then
-											if dist < minDistExact then minDistExact = dist closestExact = npc end
-										elseif folderIsCivilian == targetIsCivilian then
-											if dist < minDistFallback then minDistFallback = dist closestFallback = npc end
-										end
+						for _, npc in ipairs(folder:GetChildren()) do
+							-- Yalnızca tabloda (listede) seçili olan NPC'leri hedef al
+							if npc:IsA("Model") and targetNamesTable[npc.Name] then
+								local targetHrp = npc.PrimaryPart or npc:FindFirstChild("HumanoidRootPart") or npc:FindFirstChildWhichIsA("BasePart")
+								local hum = npc:FindFirstChildOfClass("Humanoid")
+								if targetHrp and hum and hum.Health > 0 then
+									local dist = (targetHrp.Position - hrp.Position).Magnitude
+									if dist < minDist then 
+										minDist = dist 
+										closest = npc 
 									end
 								end
 							end
@@ -1673,7 +1668,7 @@ local function getSmartTarget(targetName)
 			end
 		end
 	end
-	return closestExact or closestFallback
+	return closest
 end
 
 local function getNearestEnemy()
@@ -1724,7 +1719,6 @@ local function getRaidCaptainNear(centerPos, radius)
 				local activeNpcs = region:FindFirstChild("ActiveNpcs")
 				if activeNpcs then
 					for _, folder in ipairs(activeNpcs:GetChildren()) do
-						-- Sadece "Raid Captain" adlı klasörleri tara
 						if folder.Name == "Raid Captain" then
 							for _, npc in ipairs(folder:GetChildren()) do
 								if npc:IsA("Model") then
@@ -1748,25 +1742,22 @@ local function getRaidCaptainNear(centerPos, radius)
 	return closest
 end
 
--- Farm Döngüsü (Anti-Cheat Hız Korumalı)
+-- Farm Döngüsü
 RunService.Heartbeat:Connect(function()
 	if isChestPriority then return end
 	local char = LocalPlayer.Character
 	local hrp = char and char:FindFirstChild("HumanoidRootPart")
 	if not hrp then return end
 
-	-- Hedef Belirleme Sıralaması
 	if not isSealedPriority then
-		if npcFarmEnabled then currentTarget = getSmartTarget(selectedNPC)
+		if npcFarmEnabled then currentTarget = getSmartTarget(selectedNPCs)
 		elseif autoFarmEnabled then currentTarget = getNearestEnemy()
 		else currentTarget = nil end
 	end
-	-- Eğer isSealedPriority açıksa currentTarget korunan sandık farmı tarafından belirlenir
 
 	if currentTarget then
 		local targetPart = currentTarget.PrimaryPart or currentTarget:FindFirstChild("HumanoidRootPart") or currentTarget:FindFirstChildWhichIsA("BasePart")
 		if targetPart then
-			-- Oyunun Anti-Cheat'ine karşı sürekli hızı sıfırlayıp pozisyon koruma
 			hrp.Velocity = Vector3.zero
 			hrp.RotVelocity = Vector3.zero
 			local topPosition = targetPart.Position + Vector3.new(0, hitHeight, 0)
@@ -1812,9 +1803,31 @@ end)
 
 MainTab:CreateSection("Gelişmiş Farm Sistemi")
 MainTab:CreateToggle({ Name = "Genel Auto Farm (En Yakın)", CurrentValue = false, Callback = function(val) autoFarmEnabled = val if val then npcFarmEnabled = false end end })
-MainTab:CreateToggle({ Name = "Özel NPC Farm (Seçilen)", CurrentValue = false, Callback = function(val) npcFarmEnabled = val if val then autoFarmEnabled = false end end })
+MainTab:CreateToggle({ Name = "Özel NPC Farm (Seçilenler)", CurrentValue = false, Callback = function(val) npcFarmEnabled = val if val then autoFarmEnabled = false end end })
 
-local npcDropdown = MainTab:CreateDropdown({ Name = "Hedef NPC Seç", Options = npcNamesList, CurrentOption = npcNamesList[1], Callback = function(val) selectedNPC = val end })
+local npcDropdown = MainTab:CreateDropdown({ Name = "Hedef NPC Seç (Aşağıdan Ekle)", Options = npcNamesList, CurrentOption = npcNamesList[1], Callback = function(val) currentDropdownSelection = val end })
+local selectedListLabel = MainTab:CreateLabel("Seçili NPC'ler: Yok")
+
+MainTab:CreateButton({
+	Name = "Seçileni Listeye Ekle / Çıkar",
+	Callback = function()
+		if currentDropdownSelection ~= "" and currentDropdownSelection ~= "Bulunamadı" then
+			if selectedNPCs[currentDropdownSelection] then
+				selectedNPCs[currentDropdownSelection] = nil -- Listede varsa çıkar
+			else
+				selectedNPCs[currentDropdownSelection] = true -- Listede yoksa ekle
+			end
+			
+			local listStr = ""
+			for name, _ in pairs(selectedNPCs) do
+				listStr = listStr .. name .. ", "
+			end
+			if listStr == "" then listStr = "Yok" else listStr = string.sub(listStr, 1, -3) end
+			selectedListLabel:Set("Seçili NPC'ler: " .. listStr)
+		end
+	end,
+})
+
 MainTab:CreateButton({ Name = "NPC Listesini Yenile", Callback = function() npcDropdown:Refresh(refreshNpcList()) end })
 
 MainTab:CreateDivider()
@@ -1837,8 +1850,6 @@ MainTab:CreateToggle({
 	Callback = function(val)
 		autoChestEnabled = val
 		if val then
-			Window:Notify({ Title = "Sistem", Content = "Normal Chest Farm Başladı.", Type = "Success", Duration = 3 })
-			
 			task.spawn(function()
 				while autoChestEnabled do
 					local char = LocalPlayer.Character
@@ -1848,12 +1859,11 @@ MainTab:CreateToggle({
 					local foundSomething = false
 					local targetPrompts = {}
 					
-					-- Sandıkları Topla (Sealed OLANLARI ATLA)
 					for _, obj in ipairs(workspace:GetDescendants()) do
 						if obj:IsA("ProximityPrompt") and (obj.Name == "LootDropPrompt" or obj.Name == "ChestPrompt") and obj.Enabled then
 							local model = obj:FindFirstAncestorWhichIsA("Model")
-							-- Eğer adı Sealed ile başlıyorsa bu döngüde dahil etme
-							if model and string.find(model.Name, "Sealed") == 1 then
+							-- Sadece isminde "Sealed " geçmeyenleri listeye al
+							if model and string.find(model.Name, "Sealed ") == 1 then
 								continue
 							end
 							table.insert(targetPrompts, obj)
@@ -1864,7 +1874,7 @@ MainTab:CreateToggle({
 						if not autoChestEnabled then break end
 						if prompt and prompt.Parent and prompt.Enabled then
 							foundSomething = true
-							isChestPriority = true -- Karakter hareketini (Farm'ı) durdur
+							isChestPriority = true 
 							
 							local targetPart = prompt.Parent
 							if not targetPart:IsA("BasePart") then
@@ -1876,16 +1886,14 @@ MainTab:CreateToggle({
 								hrp.CFrame = targetPart.CFrame * CFrame.new(0, 2, 0)
 								task.wait(0.2)
 								
-								-- Hold süresini 0'a zorla
 								pcall(function() prompt.HoldDuration = 0 end)
 								task.wait(0.1)
 								
-								-- T Tuşuna Bas (Aç)
 								VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.T, false, game)
 								task.wait(0.05)
 								VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.T, false, game)
 								
-								task.wait(0.6) -- Animasyon ve loot dökülmesi için bekle
+								task.wait(0.6)
 							end
 						end
 					end
@@ -1901,15 +1909,12 @@ MainTab:CreateToggle({
 	end,
 })
 
--- KORUNAN SANDIK SİSTEMİ (YENİ EKLENEN)
 MainTab:CreateToggle({
 	Name = "Korunan Sandık (Sealed Chest Farm)",
 	CurrentValue = false,
 	Callback = function(val)
 		autoSealedEnabled = val
 		if val then
-			Window:Notify({ Title = "Sistem", Content = "Korunan sandık farmı başladı (Raid Captain bekçileri temizlenecek).", Type = "Success", Duration = 3 })
-			
 			task.spawn(function()
 				while autoSealedEnabled do
 					local char = LocalPlayer.Character
@@ -1917,31 +1922,31 @@ MainTab:CreateToggle({
 					if not hrp then task.wait(0.5) continue end
 					
 					local foundSealed = false
-					local chestsFolder = workspace:FindFirstChild("Chests")
+					-- Sandık klasörü "Chest" veya "Chests" olabilir
+					local chestsFolder = workspace:FindFirstChild("Chest") or workspace:FindFirstChild("Chests")
 					
 					if chestsFolder then
 						for _, chest in ipairs(chestsFolder:GetChildren()) do
 							if not autoSealedEnabled then break end
 							
-							-- Yalnızca adı "Sealed" ile başlayanları bul
-							if chest:IsA("Model") and string.find(chest.Name, "Sealed") == 1 then
+							-- Sadece tam olarak "Sealed " (boşluklu) ile başlayanları filtrele
+							if chest:IsA("Model") and string.find(chest.Name, "Sealed ") == 1 then
 								local rootPart = chest:FindFirstChild("RootPart") or chest.PrimaryPart or chest:FindFirstChildWhichIsA("BasePart")
 								if rootPart then
 									local prompt = chest:FindFirstChild("ChestPrompt", true)
 									if prompt and prompt:IsA("ProximityPrompt") and prompt.Enabled then
 										foundSealed = true
 										
-										-- Sandığın 100 stud yakınındaki Raid Captain'leri bul
 										local raidBoss = getRaidCaptainNear(rootPart.Position, 100)
 										
 										if raidBoss then
-											-- Raid Captain Hayatta! Sandığı açmayı durdur, bossu kes
+											-- Korumalar hayatta, önce onları kes
 											isSealedPriority = true
 											currentTarget = raidBoss
 										else
-											-- Korumalar Öldü! Sandığı açmaya başla
+											-- Korumalar temizlendi, sandığı aç
 											isSealedPriority = false
-											isChestPriority = true -- Farm tamamen dursun
+											isChestPriority = true 
 											currentTarget = nil
 											
 											hrp.Velocity = Vector3.zero
@@ -1949,11 +1954,9 @@ MainTab:CreateToggle({
 											hrp.CFrame = targetPart.CFrame * CFrame.new(0, 2, 0)
 											task.wait(0.3)
 											
-											-- Hold'u 0'a zorla
 											pcall(function() prompt.HoldDuration = 0 end)
 											task.wait(0.1)
 											
-											-- T bas ve aç
 											VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.T, false, game)
 											task.wait(0.05)
 											VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.T, false, game)
@@ -1961,7 +1964,7 @@ MainTab:CreateToggle({
 											task.wait(0.8)
 											isChestPriority = false
 										end
-										break -- Bir kerede tek Sealed sandığa odaklansın
+										break
 									end
 								end
 							end
@@ -1987,7 +1990,6 @@ MainTab:CreateToggle({
 --==================================================================--
 local PlayerTab = Window:CreateTab("Player")
 
--- Hız Ayarı
 local walkSpeed = 16
 local wsConnection
 PlayerTab:CreateSection("Karakter Fiziği")
@@ -2011,7 +2013,6 @@ PlayerTab:CreateToggle({
 })
 PlayerTab:CreateSlider({ Name = "Hız Miktarı", Range = { 16, 300 }, Increment = 1, Suffix = " sps", CurrentValue = 16, Callback = function(v) walkSpeed = v end })
 
--- Zıplama Ayarı
 local jumpPower = 50
 local jpConnection
 PlayerTab:CreateToggle({
@@ -2035,7 +2036,6 @@ PlayerTab:CreateToggle({
 })
 PlayerTab:CreateSlider({ Name = "Zıplama Miktarı", Range = { 50, 500 }, Increment = 1, Suffix = " jp", CurrentValue = 50, Callback = function(v) jumpPower = v end })
 
--- Sonsuz Zıplama
 local infJumpConnection
 PlayerTab:CreateToggle({
 	Name = "Sonsuz Zıplama (Infinite Jump)",
@@ -2053,7 +2053,6 @@ PlayerTab:CreateToggle({
 	end
 })
 
--- Duvara Tırmanma (Spider)
 local spiderConnection
 PlayerTab:CreateToggle({
 	Name = "Duvara Tırmanma (Spider)",
@@ -2081,7 +2080,6 @@ PlayerTab:CreateToggle({
 	end
 })
 
--- Noclip
 local noclipConnection
 PlayerTab:CreateToggle({
 	Name = "Duvarlardan Geçme (Noclip)",
@@ -2105,7 +2103,6 @@ PlayerTab:CreateToggle({
 
 PlayerTab:CreateDivider()
 
--- Uçma (Fly)
 local flySpeed = 50
 local flyConnection
 PlayerTab:CreateSection("Uçma (Fly)")
@@ -2155,10 +2152,6 @@ PlayerTab:CreateToggle({
 })
 PlayerTab:CreateSlider({ Name = "Fly Hızı", Range = { 10, 300 }, Increment = 5, Suffix = " vel", CurrentValue = 50, Callback = function(v) flySpeed = v end })
 
-
---==================================================================--
---  CLONE & KAÇIŞ SİSTEMİ
---==================================================================--
 PlayerTab:CreateDivider()
 PlayerTab:CreateSection("Clone & Kaçış Sistemi")
 
@@ -2184,7 +2177,6 @@ PlayerTab:CreateToggle({
 						if hum and hrp and cloneHrp and hum.Health > 0 and hum.Health <= autoTpHealth then
 							if (hrp.Position - cloneHrp.Position).Magnitude > 10 then
 								hrp.CFrame = cloneHrp.CFrame
-								Window:Notify({Title = "Acil Durum", Content = "Canın azaldı, Clone'a kaçtın!", Type = "Success", Duration = 3})
 							end
 						end
 					end
@@ -2220,11 +2212,9 @@ PlayerTab:CreateToggle({
 					if part:IsA("BasePart") then part.Anchored = true part.CanCollide = false end
 				end
 				currentClone.Parent = workspace
-				Window:Notify({Title = "Clone", Content = "Clone oluşturuldu ve sabitlendi.", Type = "Success", Duration = 2})
 			end
 		else
 			if currentClone then currentClone:Destroy() currentClone = nil end
-			Window:Notify({Title = "Clone", Content = "Clone silindi.", Type = "Error", Duration = 2})
 		end
 	end,
 })
@@ -2235,9 +2225,7 @@ PlayerTab:CreateButton({
 		if currentClone and currentClone:FindFirstChild("HumanoidRootPart") then
 			local char = LocalPlayer.Character
 			local hrp = char and char:FindFirstChild("HumanoidRootPart")
-			if hrp then hrp.CFrame = currentClone.HumanoidRootPart.CFrame Window:Notify({Title = "TP", Content = "Clone'a ışınlandın.", Type = "Success", Duration = 2}) end
-		else
-			Window:Notify({Title = "Hata", Content = "Önce bir Clone oluşturmalısın!", Type = "Error", Duration = 2})
+			if hrp then hrp.CFrame = currentClone.HumanoidRootPart.CFrame end
 		end
 	end,
 })
